@@ -1,0 +1,871 @@
+USE [homewizard_test2database]
+GO
+/****** Object:  StoredProcedure [homewizard_test2user].[sp_RECALL_FoundMatch]    Script Date: 4/24/2023 11:42:53 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER Procedure [homewizard_test2user].[sp_RECALL_FoundMatch]    
+(   
+@paramAppliaceType varchar(500),   
+@paramBrand varchar(500),   
+@paramModel varchar(500),   
+@paramSerialNumber varchar(500)  ,
+@outCpsc_recall_id varchar(250) out,
+@outCspsc_recall_number varchar(250) out,
+@outAlert VARCHAR(50) out
+)   
+AS   
+BEGIN 
+
+   
+  --   DECLARE @paramAppliaceType VARCHAR(500)='water_heater_gas' 
+  --   DECLARE @paramBrand VARCHAR(500)='Navien' 
+  --   DECLARE @paramModel VARCHAR(500)='NPE-180A'  
+  --   DECLARE @paramSerialNumber VARCHAR(500)='7410x18709xxxx'   --WFKM063106 through WFKM063195
+    
+	 --DECLARE @outCpsc_recall_id varchar(250)
+	 --DECLARE @outCspsc_recall_number varchar(250)
+	 --DECLARE @outAlert VARCHAR(50) 
+	
+	-- REMOVING SPACE & SPECIAL CHAR FROM BRAND AND MODEL.
+	SET @paramBrand = [homewizard_test2user].RemoveSpecialChars(@paramBrand)
+	SET @paramModel = [homewizard_test2user].RemoveSpecialChars(@paramModel)
+
+	SET	@outCpsc_recall_id=0
+	SET	@outCspsc_recall_number =0
+	SET	@outAlert  =''
+
+
+	DECLARE @cpsc_recall_id varchar(250)
+    DECLARE @cpsc_recall_number varchar(250)
+    DECLARE @serial_type_id INT=0 
+
+
+	--***----
+		DECLARE @firstNchar varchar(500)
+	    DECLARE @lastNchar varchar(500)
+		DECLARE @lastNumbers INT;
+		DECLARE @NumbericValue INT;
+		DECLARE @Substringlength INT
+		DECLARE @out_extra_case_match_found BIT=0
+		DECLARE @serial_value TABLE 
+                            ( 
+                               id  INT IDENTITY, 
+                               val VARCHAR(500) 
+                            ) 
+
+							DECLARE @model_value TABLE 
+                            ( 
+                               id  INT IDENTITY, 
+                               val VARCHAR(500) 
+                            ) 
+
+							DECLARE @model_different_matching_length TABLE 
+                            ( 
+                               id  INT IDENTITY, 
+                               startlen int
+                            ) 
+
+
+		 DECLARE @model_translation TABLE 
+                            ( 
+                               id  INT IDENTITY, 
+                               cpsc_recall_id varchar(250),
+							   cpsc_recall_number varchar(250),
+							   model_type_id INT,
+							   serial_type_id INT
+                            ) 
+    ---*****----
+
+
+    SELECT @cpsc_recall_id = cpsc_recall_id, 
+           @cpsc_recall_number = cpsc_recall_number, 
+           @serial_type_id = serial_type_id 
+    FROM   [homewizard_test2user].[recall_plus_cpsc_translation] 
+    WHERE  ( [homewizard_test2user].RemoveSpecialChars(@paramAppliaceType) in  (SELECT [homewizard_test2user].RemoveSpecialChars(val) FROM   homewizard_test2user.Split([appliance_type], ',')) )  
+	AND 
+	( [homewizard_test2user].RemoveSpecialChars(@paramBrand) in  (SELECT [homewizard_test2user].RemoveSpecialChars(val) FROM   homewizard_test2user.Split(brand, ',')) )
+           AND [homewizard_test2user].RemoveSpecialChars([model]) = @paramModel  and model_type_id is null
+
+ 
+  --********* CHECK FOR MODEL TYPES IF NO RECALL ID FOUND ****-------
+  if(ISNULL(@cpsc_recall_id,'') ='')
+  BEGIN
+  
+  INSERT INTO @model_translation
+   SELECT   cpsc_recall_id, 
+            cpsc_recall_number, model_type_id,
+            serial_type_id 
+    FROM   [homewizard_test2user].[recall_plus_cpsc_translation] 
+    WHERE  ( [homewizard_test2user].RemoveSpecialChars(@paramAppliaceType) in  (SELECT val FROM   homewizard_test2user.Split([homewizard_test2user].RemoveSpecialChars([appliance_type]), ',')) )   AND 
+		   ( [homewizard_test2user].RemoveSpecialChars(@paramBrand) in  (SELECT val FROM   homewizard_test2user.Split([homewizard_test2user].RemoveSpecialChars(brand), ',')) )
+		   and model_type_id is not null
+
+		 
+
+		   DECLARE @model_records_count INT=0
+		   SELECT @model_records_count= COUNT(*) FROM @model_translation
+
+		   if(@model_records_count>0)
+		   BEGIN
+		 
+		    DECLARE @model_type_id     INT, 
+                        @model_start_range DECIMAL(30, 3), 
+                        @model_end_range   DECIMAL(30, 3), 
+                        @model_string      VARCHAR(max), 
+                        @model_action             VARCHAR(250) 
+
+
+		   DECLARE @intFlag INT
+			SET @intFlag = 1
+			WHILE (@intFlag <=@model_records_count)
+			BEGIN
+
+			SELECT @model_type_id=model_type_id,@cpsc_recall_id=cpsc_recall_id, @cpsc_recall_number=cpsc_recall_number,@serial_type_id=serial_type_id 
+			FROM @model_translation WHERE ID=@intFlag
+
+			  SELECT  @model_start_range = model_start_range, 
+                       @model_end_range = model_end_range, 
+                       @model_string = model_string, 
+                       @model_action = [action] 
+
+                FROM   [homewizard_test2user].[recall_plus_model_types] 
+                WHERE  model_type_id = @model_type_id
+				
+				if(len(@model_string)>0)
+				BEGIN
+				-- REMOVE BEFORE ADDING NEW
+			     DELETE from @model_value
+
+				INSERT INTO @model_value 
+                          SELECT val 
+                          FROM   homewizard_test2user.Split(@model_string, ','); 
+				END
+
+					IF( @model_action = 'array_first_{#}_begin' ) 
+					              BEGIN 
+								  SET @Substringlength=0;
+								      -- get comma sep in temp table
+									  
+					                   BEGIN try 
+									   INSERT INTO @model_different_matching_length SELECT distinct LEN(val) FROM @model_value 
+										  if(len(@paramModel)>0 and  (SELECT COUNT(*) FROM @model_different_matching_length)>0 )
+										  BEGIN
+										  IF((SELECT Count(*) FROM @model_value WHERE lower(val) in  (SELECT lower(LEFT(@paramModel,startlen)) FROM @model_different_matching_length))>0)
+										   BEGIN 
+										     SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number 
+										     BREAK;
+										   END
+										  ELSE
+										    BEGIN 
+										       SET @cpsc_recall_id=''
+										       SET @cpsc_recall_number='';
+										    END
+										  END
+					                  END try 
+
+					                  BEGIN catch 
+					                  END catch; 
+									END 
+									  -- IF Model  in between range..
+                 ELSE IF( @model_action = 'range_between' ) 
+                  BEGIN 
+                      BEGIN try 
+					    if(len(@paramModel)>0)
+						BEGIN
+                          IF( @paramModel BETWEEN 
+                              @model_start_range AND @model_end_range 
+                            ) 
+                            BEGIN 
+                              SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number 
+                            END 
+						 END
+                      END try 
+
+                      BEGIN catch 
+                      END catch; 
+                  END 
+				    ELSE IF(@model_action = 'first_{#}_chars_then_range_till_3char_then_E' OR @model_action = 'first_{#}_chars_then_range_till_3char_then_S')
+						  BEGIN 
+
+							  BEGIN try 
+				   -- REMOVE SPACE IF ANY
+				   SET @paramModel = REPLACE (ltrim(rtrim(@paramModel)),' ', '')
+				 
+				     if(len(@paramModel)>len(@model_string))
+					 BEGIN
+					    -- GET FIRST TWO CHARs
+						SET @firstNchar =''
+						-- len(@serial_string) so it will get left one chars and length of chars will be @serial_string
+						-- for example user input : CP 4363986 and db we have @serial_string=cp 
+						set @firstNchar = LEFT(@paramModel,len(@model_string))
+
+					    -- CHECK IF THEY ARE MATCHING OR NOT.
+						if(lower(@model_string) = lower(@firstNchar))
+						BEGIN 
+					 
+						-- MATCH FOUND THEN GET ALL the other chars after 1st 2 chars.
+						 --len(@serial_string)+1 as we know chars len and then after those chars we need to get whole number.
+						 SET @lastNumbers= SUBSTRING (@paramModel, len(@model_string)+1, Convert(INT, 3))
+				        -- NOW CHECK for Range found.
+
+						 IF( @lastNumbers BETWEEN 
+                              @model_start_range AND @model_end_range 
+                            ) 
+							BEGIN
+							DECLARE @last_character as char(1)
+							SET @last_character= SUBSTRING (@paramModel, len(@model_string)+4, Convert(INT, 1))
+							IF(@model_action = 'first_{#}_chars_then_range_till_3char_then_E')
+							BEGIN
+								IF(@last_character ='E')
+							BEGIN
+							 SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number 
+							END
+							END
+							IF(@model_action = 'first_{#}_chars_then_range_till_3char_then_S')
+							BEGIN
+								IF(@last_character ='S')
+							BEGIN
+							 SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number 
+							END
+							END
+
+						
+
+							END
+				     
+						END
+				     
+					 END
+                      END try 
+
+                      BEGIN catch 
+					 
+                      END catch;
+						  END
+					ELSE IF(@model_action ='no_action')
+					BEGIN
+					  SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number 
+					END
+
+		
+			SET @intFlag = @intFlag + 1
+		
+			END
+		   END
+
+  END
+
+
+
+		 
+
+    IF( LEN(ISNULL(@cpsc_recall_id,'')) > 0 ) 
+      BEGIN 
+	 
+          IF( @serial_type_id > 0 ) 
+            BEGIN 
+                DECLARE @recall_type_id     INT, 
+                        @serial_start_range DECIMAL(30, 3), 
+                        @serial_end_range   DECIMAL(30, 3), 
+						@second_serial_start_range DECIMAL(30, 3), 
+                        @second_serial_end_range   DECIMAL(30, 3), 
+                        @serial_string      VARCHAR(max), 
+                        @action             VARCHAR(250), 
+						@extra_case1        VARCHAR(max), 
+						@extra_case1_action   VARCHAR(250),  
+						@extra_case1_type   VARCHAR(50),  
+						@extra_case2        VARCHAR(max), 
+						@extra_case2_action   VARCHAR(250), 
+						@extra_case2_type   VARCHAR(50),  
+                        @alert_type         VARCHAR(250) 
+
+                SELECT @serial_start_range = serial_start_range, 
+                       @serial_end_range = serial_end_range, 
+					   @second_serial_start_range = second_serial_start_range,
+					   @second_serial_end_range = second_serial_end_range,
+                       @serial_string = serial_string, 
+                       @action = [action], 
+					   @extra_case1=extra_case1,
+					   @extra_case1_action=extra_case1_action,
+					   @extra_case1_type=extra_case1_type,
+					   @extra_case2=extra_case2,
+					   @extra_case2_action=extra_case2_action,
+					   @extra_case2_type=extra_case2_type,
+                       @alert_type = alert_type 
+                FROM   [homewizard_test2user].[recall_plus_serial_types] 
+                WHERE  recall_type_id = @serial_type_id 
+
+				if(len(ISNULL(@serial_string,''))>0)
+				BEGIN
+				INSERT INTO @serial_value 
+                          SELECT val 
+                          FROM   homewizard_test2user.Split(@serial_string, ','); 
+				END
+
+				
+			 
+			   -- HANDLING CASE 1 that Serial Number is array (value AT,SS,EE,), start with.
+                IF( @action = 'array_begin' ) 
+                  BEGIN 
+                      BEGIN try 
+
+						  if(len(@paramSerialNumber)>0)
+						  BEGIN
+                          IF((SELECT Count(*) 
+                          FROM   @serial_value 
+                          WHERE  val LIKE @paramSerialNumber + '%')>0)
+						  BEGIN 
+						  SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number 
+						  ,@outAlert=@alert_type
+						  END
+						  END
+                      END try 
+
+                      BEGIN catch 
+                      END catch; 
+                  END 
+				  -- IF Serial NUMBER in between range..
+                ELSE IF( @action = 'range_between' ) 
+                  BEGIN 
+                      BEGIN try 
+					    if(len(@paramSerialNumber)>0)
+						BEGIN
+                          IF( @paramSerialNumber BETWEEN 
+                              @serial_start_range AND @serial_end_range 
+                            ) 
+                            BEGIN 
+                            SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number,
+						  @outAlert=@alert_type
+                            END 
+						 END
+                      END try 
+
+                      BEGIN catch 
+                      END catch; 
+                  END 
+				  -- If SERIAL NUMBER STARTING BETWEEN RANGE and Last 
+				  ELSE IF( @action = 'first7chars_range_8thchar_equal_any_of' ) 
+                  BEGIN 
+                      BEGIN try 
+					  if(len(@paramSerialNumber)>0)
+					  BEGIN
+					    IF(len(@paramSerialNumber)>7)
+						BEGIN
+						
+						DECLARE @starting7Number INT;
+						 -- GETTING STARTING 
+						 SELECT @starting7Number= SUBSTRING (@paramSerialNumber, 1, 7)
+						
+						if(len(@starting7Number)>0)
+						BEGIN
+                          IF( @starting7Number BETWEEN 
+                              @serial_start_range AND @serial_end_range 
+                            ) 
+                            BEGIN 
+							DECLARE @8thNumber INT;
+							 SELECT @8thNumber= SUBSTRING (@paramSerialNumber, 8, 1)
+						
+
+						  if(len(@8thNumber)>0)
+						  BEGIN
+                          IF((SELECT Count(*)  FROM  @serial_value  WHERE  val =@8thNumber)>0)
+						  BEGIN 
+						 
+						  SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number 
+						  ,@outAlert=@alert_type
+						  END
+						  END
+
+                            END 
+						 END
+
+						END
+					  END
+				
+                      END try 
+
+                      BEGIN catch 
+                      END catch; 
+                  END 
+				  	  -- If SERIAL NUMBER FIRST 4 CHAR IN RANGE
+				  ELSE IF( @action = 'first_4_char_range' ) 
+                  BEGIN 
+                      BEGIN try 
+					  if(len(@paramSerialNumber)>0)
+					  BEGIN
+					    IF(len(@paramSerialNumber)>4)
+						BEGIN
+						
+						DECLARE @starting4Number INT;
+						 -- GETTING STARTING 
+						 SELECT @starting4Number= SUBSTRING (@paramSerialNumber, 1, 4)
+						
+						if(len(@starting4Number)>0)
+						BEGIN
+                          IF( @starting4Number BETWEEN 
+                              @serial_start_range AND @serial_end_range 
+                            ) 
+                            BEGIN 
+						 
+						  SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number 
+						  ,@outAlert=@alert_type
+						  END
+						  END
+
+                            END 
+						 END
+				
+                      END try 
+                      BEGIN catch 
+                      END catch; 
+                  END 
+
+				  ELSE IF( @action = 'first_{#}_chars_then_range')
+				  BEGIN
+				   BEGIN try 
+				   -- REMOVE SPACE IF ANY
+				   SET @paramSerialNumber = REPLACE (ltrim(rtrim(@paramSerialNumber)),' ', '')
+				     
+				     if(len(@paramSerialNumber)>len(@serial_string))
+					 BEGIN
+					    -- GET FIRST TWO CHARs
+						SET @firstNchar =''
+						-- len(@serial_string) so it will get left one chars and length of chars will be @serial_string
+						-- for example user input : CP 4363986 and db we have @serial_string=cp 
+						set @firstNchar = LEFT(@paramSerialNumber,len(@serial_string))
+
+					    -- CHECK IF THEY ARE MATCHING OR NOT.
+						if(lower(@serial_string) = lower(@firstNchar))
+						BEGIN 
+
+						 
+						-- MATCH FOUND THEN GET ALL the other chars after 1st 2 chars.
+						 --len(@serial_string)+1 as we know chars len and then after those chars we need to get whole number.
+						 SET @lastNumbers= SUBSTRING (@paramSerialNumber, len(@serial_string)+1, len(@paramSerialNumber))
+
+				        -- NOW CHECK for Range found.
+
+						 IF( @lastNumbers BETWEEN 
+                              @serial_start_range AND @serial_end_range 
+                            ) 
+							BEGIN
+							   SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number 
+						  ,@outAlert=@alert_type
+
+							END
+				     
+						END
+				     
+					 END
+                      END try 
+
+                      BEGIN catch 
+                      END catch;
+				  END
+				    ELSE IF( @action = 'first_range_then_{#}_chars')
+				  BEGIN
+				   BEGIN try 
+				   -- REMOVE SPACE IF ANY
+				   SET @paramSerialNumber = REPLACE (ltrim(rtrim(@paramSerialNumber)),' ', '')
+				     
+				     if(len(@paramSerialNumber)>len(@serial_string))
+					 BEGIN
+					    -- GET FIRST TWO CHARs
+						SET @lastNchar =''
+						-- len(@serial_string) so it will get right one chars and length of chars will be @serial_string
+						-- for example user input : 4363986CP and db we have @serial_string=cp 
+						set @lastNchar = RIGHT(@paramSerialNumber,len(@serial_string))
+
+					    -- CHECK IF THEY ARE MATCHING OR NOT.
+						if(lower(@serial_string) = lower(@lastNchar))
+						BEGIN 
+
+						 
+						-- MATCH FOUND THEN GET ALL the other chars after 1st 2 chars.
+						 --len(@serial_string)+1 as we know chars len and then after those chars we need to get whole number.
+						 SET @NumbericValue=  REPLACE(@paramSerialNumber,@lastNchar,'')
+
+				        -- NOW CHECK for Range found.
+
+						 IF( @NumbericValue BETWEEN 
+                              @serial_start_range AND @serial_end_range 
+                            ) 
+							BEGIN
+							   SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number 
+						  ,@outAlert=@alert_type
+
+							END
+				     
+						END
+				     
+					 END
+                      END try 
+
+                      BEGIN catch 
+                      END catch;
+				  END
+
+		    ELSE IF( @action = 'array_last_{#}_begin' ) 
+                  BEGIN 
+				      -- get comma sep in temp table
+                       BEGIN try 
+					    SET  @Substringlength = 0
+					    SELECT @Substringlength= LEN(val) FROM @serial_value where id=1
+
+						  if(len(@paramSerialNumber)>0 and ISNULL(@Substringlength,0)>0)
+						  BEGIN
+						  -- GET LAST 2 char.
+						  SET @lastNchar=''
+						  set @lastNchar = RIGHT(@paramSerialNumber,@Substringlength)
+                          IF((SELECT Count(*) FROM   @serial_value WHERE val =@lastNchar)>0)
+						  BEGIN 
+						  SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number 
+						  ,@outAlert=@alert_type
+						  END
+						  END
+                      END try 
+
+                      BEGIN catch 
+                      END catch; 
+                  END 
+
+				 ELSE IF( @action = 'array_first_{#}_begin' ) 
+					BEGIN 
+					  -- get comma sep in temp table 
+					  BEGIN try 
+					  SET  @Substringlength = 0
+					    SELECT @Substringlength= Len(val)  FROM  @serial_value  WHERE (id)=1 
+					    IF(Len(@paramSerialNumber)>0  AND  Isnull(@Substringlength,0)>0 ) 
+					    BEGIN 
+					      SET @firstNchar='' 
+					      SET @firstNchar = LEFT(@paramSerialNumber,@Substringlength) 
+					      IF((SELECT Count(*) FROM   @serial_value WHERE  Lower(val) = Lower(@firstNchar))>0) 
+					      BEGIN 
+						   SELECT @outCpsc_recall_id=     @cpsc_recall_id, 
+					                 @outCspsc_recall_number=@cpsc_recall_number , 
+					                 @outAlert=              @alert_type 
+					      
+					      END 
+						  
+					    END 
+					  END try 
+					  BEGIN catch 
+					  END catch; 
+					END
+				ELSE IF( @action = 'array_first_{#}_begin_OR' ) 
+				BEGIN
+				 -- get comma sep in temp table 
+					  BEGIN try 
+					  SET  @Substringlength = 0
+					    SELECT @Substringlength= Len(val)  FROM  @serial_value  WHERE (id)=1 
+					    IF(Len(@paramSerialNumber)>0  AND  Isnull(@Substringlength,0)>0 ) 
+					    BEGIN 
+					      SET @firstNchar='' 
+					      SET @firstNchar = LEFT(@paramSerialNumber,@Substringlength) 
+					      IF((SELECT Count(*) FROM   @serial_value WHERE  Lower(val) = Lower(@firstNchar))>0) 
+					      BEGIN 
+						   SELECT @outCpsc_recall_id=     @cpsc_recall_id, 
+					                 @outCspsc_recall_number=@cpsc_recall_number , 
+					                 @outAlert=              @alert_type 
+					      
+					      END
+						  ELSE 
+						  BEGIN 
+						 
+						  --**** EXTRA CHECK START HERE.. 
+						   IF(Len(Isnull(@extra_case1_action,''))>0) 
+					        BEGIN 
+							IF(@extra_case1_action='array_first_{#}_begin')
+							BEGIN
+							 
+					          SET @out_extra_case_match_found=0 
+					          EXEC Sp_recall_foundmatch_extracase  @extra_case1_action,  @extra_case1,  @paramSerialNumber, @out_extra_case_match_found OUT
+					          -- CHECKING OTHER CASE2 BECAUSE CASE 1 and CASE 2 are together 
+							  if(LEN(ISNULL(@extra_case2_action,''))=0)
+							  BEGIN
+							 
+									IF(@out_extra_case_match_found=1)
+									BEGIN
+											SELECT @outCpsc_recall_id=     @cpsc_recall_id, 
+											@outCspsc_recall_number=@cpsc_recall_number , 
+											@outAlert= @alert_type 
+									END
+							  
+							  END
+
+							END
+							ELSE IF(@extra_case1_action='array_last_{#}_begin')
+							BEGIN
+							     SET @out_extra_case_match_found=0 
+					          EXEC Sp_recall_foundmatch_extracase  @extra_case1_action,  @extra_case1,  @paramSerialNumber, @out_extra_case_match_found OUT
+
+							  IF(@out_extra_case_match_found=1)
+									BEGIN
+											SELECT @outCpsc_recall_id=     @cpsc_recall_id, 
+											@outCspsc_recall_number=@cpsc_recall_number , 
+											@outAlert= @alert_type 
+									END
+
+							END
+					        END 
+
+						  END 
+						      --**** EXTRA CHECK END HERE.. 
+					    END 
+					  END try 
+					  BEGIN catch 
+					  END catch; 
+
+				END
+				  ELSE IF(@action = 'array_second_{#}_begin')
+						  BEGIN 
+						
+							SET @Substringlength=0
+							  SELECT @Substringlength= LEN(val) FROM @serial_value where id=1
+							    if(ISNULL(@Substringlength,0)>0 )
+						          BEGIN
+								  -- GETTING N number char now..
+								    SET @firstNchar=''
+									
+										set @firstNchar = substring(@paramSerialNumber, @Substringlength, 1)
+											  IF((SELECT Count(*) FROM @serial_value WHERE lower(REPLACE(val,'+','')) = lower(@firstNchar))>0)
+													BEGIN 
+													 SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number,
+														@outAlert=@alert_type
+													END
+								  END
+						  END
+						  ELSE IF(@action = 'first_{#}_chars_then_range_till_nchar')
+						  BEGIN 
+
+							  BEGIN try 
+				   -- REMOVE SPACE IF ANY
+				   SET @paramSerialNumber = REPLACE (ltrim(rtrim(@paramSerialNumber)),' ', '')
+				 
+				     if(len(@paramSerialNumber)>len(@serial_string))
+					 BEGIN
+					    -- GET FIRST TWO CHARs
+						SET @firstNchar =''
+						-- len(@serial_string) so it will get left one chars and length of chars will be @serial_string
+						-- for example user input : CP 4363986 and db we have @serial_string=cp 
+						set @firstNchar = LEFT(@paramSerialNumber,len(@serial_string))
+
+					    -- CHECK IF THEY ARE MATCHING OR NOT.
+						if(lower(@serial_string) = lower(@firstNchar))
+						BEGIN 
+					 
+						-- MATCH FOUND THEN GET ALL the other chars after 1st 2 chars.
+						 --len(@serial_string)+1 as we know chars len and then after those chars we need to get whole number.
+						 SET @lastNumbers= SUBSTRING (@paramSerialNumber, len(@serial_string)+1, Convert(INT, @extra_case1))
+				        -- NOW CHECK for Range found.
+
+						 IF( @lastNumbers BETWEEN 
+                              @serial_start_range AND @serial_end_range 
+                            ) 
+							BEGIN
+							   SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number 
+						  ,@outAlert=@alert_type
+
+							END
+				     
+						END
+				     
+					 END
+                      END try 
+
+                      BEGIN catch 
+					 
+                      END catch;
+						  END
+                ELSE IF(@action ='first_range_then_char_till_nchar')
+				BEGIN 
+				 BEGIN try 
+				   -- REMOVE SPACE IF ANY
+				   SET @paramSerialNumber = REPLACE (ltrim(rtrim(@paramSerialNumber)),' ', '')
+				     if(len(@paramSerialNumber)>len(@serial_string))
+					 BEGIN
+						  set @NumbericValue = LEFT(@paramSerialNumber,Convert(INT, @extra_case1))
+						  IF( @NumbericValue BETWEEN 
+                              @serial_start_range AND @serial_end_range 
+                            ) 
+							BEGIN
+						  SET @firstNchar =''
+						  set @firstNchar = substring(@paramSerialNumber, Convert(INT, @extra_case2)+len(@serial_string)-1, len(@serial_string))
+						      -- CHECK IF THEY ARE MATCHING OR NOT.
+						if(lower(@serial_string) = lower(@firstNchar))
+						BEGIN
+								  SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number 
+								 ,@outAlert=@alert_type
+						END
+							END
+						END
+                      END try 
+                      BEGIN catch 
+                      END catch;
+				END
+			    ELSE IF(@action = 'first_{#}_chars_then_range-multiple')
+				BEGIN 
+				   BEGIN try 
+						    DECLARE @rows INT=1,@skip_count INT =0; 
+							SELECT @skip_count = Count(*) FROM @model_value
+						    DECLARE @cell_value VARCHAR(250) 
+						   
+						    WHILE @rows <= (SELECT Count(*) FROM @serial_value) 
+						      BEGIN 
+							
+						          SELECT @cell_value = val FROM @serial_value  WHERE  id = @rows 
+						
+						          IF( Len(Isnull(@cell_value, '')) > 0 ) 
+						            BEGIN 
+						              
+									 
+
+						                INSERT INTO @model_value SELECT val FROM   homewizard_test2user.Split(@cell_value, '-') 
+						                
+										SET @firstNchar=''
+						                SET @serial_start_range=0; 
+						                SET @serial_end_range=0; 
+
+						                SELECT @firstNchar = val FROM   @model_value  WHERE  id = 1+@skip_count
+						                SELECT @serial_start_range = val FROM @model_value WHERE  id=2 +@skip_count  
+						                SELECT @serial_end_range = val  FROM @model_value WHERE  id=3 +@skip_count
+										
+										IF(LEN(@firstNchar)>0 AND LEN(@serial_start_range)>0 AND LEN(@serial_end_range)>0)
+										BEGIN 
+										 
+										   if(len(@paramSerialNumber)>len(@firstNchar))
+													BEGIN
+														
+														if(lower(@firstNchar) = lower(LEFT(@paramSerialNumber,len(@firstNchar))))
+														BEGIN 
+														-- MATCH FOUND THEN GET ALL the other chars after 1st 2 chars.
+														 --len(@serial_string)+1 as we know chars len and then after those chars we need to get whole number.
+														 SET @lastNumbers= SUBSTRING (@paramSerialNumber, len(@firstNchar)+1, len(@paramSerialNumber))
+													   -- NOW CHECK for Range found.
+
+														 IF( @lastNumbers BETWEEN 
+													         @serial_start_range AND @serial_end_range 
+													       ) 
+															BEGIN
+															   SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number 
+														  ,@outAlert=@alert_type
+														    break;
+															END
+													
+														END
+													
+													END
+
+										END 
+
+
+						            END 
+						 SET @skip_count= @skip_count+3
+						          SET @rows = @rows + 1; 
+						      END; 
+						END try 
+						
+						BEGIN catch 
+						END catch; 
+				END
+					ELSE IF( @action = 'firstRangeTill4_thenChar_secondRangeTill5_thenChar' ) 
+                  BEGIN 
+				   SET @paramSerialNumber = REPLACE (ltrim(rtrim(@paramSerialNumber)),' ', '')
+                        if(len(@paramSerialNumber)= 11)
+					 BEGIN
+					   -- GET FIRST 4 Char
+					   DECLARE @firstNDigits AS VARCHAR(4)
+						set @firstNDigits = LEFT(@paramSerialNumber,4)
+						 IF( @firstNDigits BETWEEN 
+                              @serial_start_range AND @serial_end_range 
+                            ) 
+							BEGIN
+							 DECLARE @firstChar VARCHAR(1)
+							  SET @firstChar= SUBSTRING (@paramSerialNumber, 5, 1)
+							  if(@firstChar = 'V')
+							 BEGIN
+							  DECLARE @secondNDigits AS VARCHAR(5)
+							   SET @secondNDigits= SUBSTRING (@paramSerialNumber, 6, 5)
+							    IF( @secondNDigits BETWEEN 
+                              @second_serial_start_range  AND @second_serial_end_range    
+                            ) 
+							BEGIN
+							 DECLARE @lasttChar VARCHAR(1)
+							  SET @lasttChar= SUBSTRING (@paramSerialNumber, 11, 1)
+							  if(@lasttChar = 'S')
+							 BEGIN
+							   SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number,
+						       @outAlert=@alert_type
+							 END
+							END
+							 END
+							END
+				     END
+                  END 	
+				ELSE IF( @action = 'serial_equal' ) 
+                  BEGIN 
+                       if(@serial_string=@paramSerialNumber)
+				        BEGIN
+				         SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number,
+						  @outAlert=@alert_type
+				     END
+                  END 		
+						  
+                ELSE IF( @action = 'no_action' ) 
+                  BEGIN 
+                       SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number,
+						  @outAlert=@alert_type
+                  END 
+				  ELSE IF( @action = 'match1to4and6to10')   
+                  BEGIN   
+				            DECLARE @MatchRange1 TABLE
+							(
+							id  INT IDENTITY, 
+                               val VARCHAR(500) 
+							)
+							DECLARE @MatchRange2 TABLE
+							(
+							id  INT IDENTITY, 
+                               val VARCHAR(500) 
+							)
+				  SET @paramSerialNumber = REPLACE (ltrim(rtrim(@paramSerialNumber)),' ', '')
+                        IF(len(@paramSerialNumber)>10)
+						BEGIN
+						IF(len(ISNULL(@extra_case1,''))>0)
+						BEGIN
+
+						INSERT INTO @MatchRange1
+                          SELECT val 
+                          FROM   homewizard_test2user.Split(@extra_case1, ',');
+						  DECLARE @first4Digits AS VARCHAR(4)
+						  set @first4Digits = LEFT(@paramSerialNumber,4)
+						  if(@first4Digits in (select val from @MatchRange1))
+						  BEGIN
+
+						    IF(len(ISNULL(@extra_case2,''))>0)
+						  BEGIN
+
+						  INSERT INTO @MatchRange2 
+                          SELECT val 
+                          FROM   homewizard_test2user.Split(@extra_case2, ',');
+						  declare @MatchedCount as int
+						  select @MatchedCount = count(*) from @MatchRange2 where val = SUBSTRING (@paramSerialNumber, 6, LEN(val))
+
+						if(@MatchedCount > 0)
+						BEGIN
+							SELECT @outCpsc_recall_id=@cpsc_recall_id,@outCspsc_recall_number=@cpsc_recall_number,@outAlert=@alert_type
+						   END
+						  END
+						  END
+						END
+						END
+				  END
+            END 
+      END 
+
+	  --SELECT @outCpsc_recall_id,
+	 	--@outCspsc_recall_number,
+	 	--@outAlert
+END 
